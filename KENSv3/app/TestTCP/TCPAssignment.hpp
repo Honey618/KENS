@@ -18,7 +18,7 @@
 
 
 #include <E/E_TimerModule.hpp>
-
+using namespace std;
 namespace E
 {
 
@@ -34,6 +34,16 @@ public:
 	virtual void initialize();
 	virtual void finalize();
 	virtual ~TCPAssignment();
+	virtual void syscall_socket(UUID syscallUUID, int pid, int sc_family, int sc_type);
+	virtual void syscall_close(UUID syscallUUID, int pid, int socket_fd);
+	virtual void syscall_bind(UUID syscallUUID, int pid, int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+	virtual void syscall_getsockname(UUID syscallUUID, int pid, int sock_fd, struct sockaddr *addr, socklen_t *addrlen);
+
+	set<tuple<int, int>> socket_table;
+	//pid, fd -> address, port, family
+	map<tuple<int, int>, tuple<uint32_t, uint16_t, short, socklen_t>>bind_table;
+
+
 protected:
 	virtual void systemCallback(UUID syscallUUID, int pid, const SystemCallParameter& param) final;
 	virtual void packetArrived(std::string fromModule, Packet* packet) final;
