@@ -16,6 +16,25 @@
 #include <netinet/ip.h>
 #include <netinet/in.h>
 
+struct SocketInfo
+{
+	int pid;
+	int sockfd;
+	//for blocking
+	E::UUID uuid;
+	//0 -> closed, 1-> listen
+	int state;
+};
+
+struct BindInfo
+{
+	int pid;
+	int sockfd;
+	uint32_t address;
+	uint16_t port;
+	short family;
+	socklen_t socklen;
+};
 
 #include <E/E_TimerModule.hpp>
 using namespace std;
@@ -39,9 +58,10 @@ public:
 	virtual void syscall_bind(UUID syscallUUID, int pid, int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 	virtual void syscall_getsockname(UUID syscallUUID, int pid, int sock_fd, struct sockaddr *addr, socklen_t *addrlen);
 
-	set<tuple<int, int>> socket_table;
-	//pid, fd -> address, port, family
-	map<tuple<int, int>, tuple<uint32_t, uint16_t, short, socklen_t>>bind_table;
+
+	list<struct SocketInfo> socket_table;
+	//pid, fd -> address, port, family, socklen
+	list<struct BindInfo> bind_table;
 
 
 protected:
