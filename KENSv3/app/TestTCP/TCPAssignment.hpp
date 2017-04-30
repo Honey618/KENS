@@ -31,7 +31,7 @@ struct SocketInfo
 	//for blocking
 	E::UUID uuid;
 	//0-> closed, 1-> listen 2-> SYN_RCVD 3-> SYN_SENT 4->ESTABLISHED
-	//5-> FIN_WAIT_1 6-> FIN_WAIT2 7->TIMED_WAIT 8->CLOSE_WAIT 9->LAST_ACK
+	//5-> FIN_WAIT_1 6-> FIN_WAIT2 7->TIMED_WAIT 8->CLOSE_WAIT 9->LAST_ACK 10->CLOSING
 	int state;
 	unsigned int backlog;
 	uint32_t saddr;

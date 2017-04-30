@@ -52,16 +52,16 @@ void TCPAssignment::syscall_socket(UUID syscallUUID, int pid, int sc_family, int
 	sock.pid = pid;
 	sock.sockfd = newsocket;
 	sock.state = 0;
+	sock.seq=0;
 	socket_table.push_back(sock);
 	return returnSystemCall(syscallUUID, newsocket);
 }
 
 void TCPAssignment::syscall_close(UUID syscallUUID, int pid, int socket_fd)
 {
-	
 	list<struct SocketInfo>::iterator it;
 	list<struct BindInfo>::iterator jt;
-	for(it = socket_table.begin(); it!=socket_table.end();it++)
+	for(it = socket_table.begin();it!=socket_table.end();it++)
 	{
 		if(it->pid == pid && it->sockfd == socket_fd)
 			break;
@@ -71,7 +71,7 @@ void TCPAssignment::syscall_close(UUID syscallUUID, int pid, int socket_fd)
 	{
 		return returnSystemCall(syscallUUID, -1);
 	}
-	if(it->state<10)
+	if(it->state<4)
 	{
 		socket_table.erase(it);
 
@@ -100,11 +100,17 @@ void TCPAssignment::syscall_close(UUID syscallUUID, int pid, int socket_fd)
 		sport = it->sport;
 		dport = it->dport;
 		printf("closing phase : src: %x:%d, dst: %x:%d\n",saddr,sport, daddr,dport);
-		it->seq = rand();
+
 		if(it->state == 4)
+		{
+			printf("CATCH A\n");
 			it->state = 5;
+		}
 		else if(it->state == 8)
+		{
+			printf("CATCH B\n");
 			it->state = 9;
+		}
 		it->uuid = syscallUUID;
 
 		Packet *newpacket = allocatePacket(sizeof(struct hdr));
@@ -128,6 +134,7 @@ void TCPAssignment::syscall_close(UUID syscallUUID, int pid, int socket_fd)
 		newhdr->tcph.check = 0;
 		newhdr->tcph.check = htons(~NetworkUtil::tcp_sum(newhdr->iph.saddr, newhdr->iph.daddr, (uint8_t*)(&(newhdr->tcph)), 20));
 		newpacket->writeData(0, newhdr, sizeof(struct hdr));
+		it->seq++;
 		this->sendPacket("IPv4",newpacket);
 	
 		free(newhdr);
@@ -277,6 +284,7 @@ void TCPAssignment::syscall_accept(UUID syscallUUID, int pid, int sockfd, struct
 		accept_waiter->uuid = syscallUUID;
 		accept_waiter->cliaddr = cliaddr;
 		accept_waiter->addrlen = addrlen;
+		accept_waiter->seq = 0;
 		accept_table.push_back(accept_waiter);
 		printf("!!!!!!!!!!!!!!blocked\n");
 	}
@@ -300,11 +308,12 @@ void TCPAssignment::syscall_accept(UUID syscallUUID, int pid, int sockfd, struct
 		sock.pid = pid;
 		sock.sockfd= newsocket;
 		sock.uuid = syscallUUID;
-		sock.daddr = estable->daddr;
-		sock.saddr = estable->saddr;
-		sock.dport = estable->dport;
-		sock.sport = estable->sport;
-		sock.state=4;
+		sock.saddr = estable->daddr;
+		sock.daddr = estable->saddr;
+		sock.sport = estable->dport;
+		sock.dport = estable->sport;
+		sock.state = estable->state;
+		sock.seq = estable->seq;
 		socket_table.push_back(sock);
 		struct BindInfo bindinfo;
 		bindinfo.pid = pid;
@@ -314,6 +323,7 @@ void TCPAssignment::syscall_accept(UUID syscallUUID, int pid, int sockfd, struct
 		bindinfo.family = 2;
 		bindinfo.socklen = sizeof(struct sockaddr);
 		bind_table.push_back(bindinfo);
+		printf("new accepted info : saddr %x:%d daddr %x:%d\n", sock.saddr, sock.sport, sock.daddr, sock.dport);
 		return returnSystemCall(syscallUUID, newsocket);
 		
 	}
@@ -374,9 +384,9 @@ void TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int sockfd, const
 	it->daddr = daddr;
 	it->sport = sport;
 	it->dport = dport;
-	it->seq = rand();
 	it->state = 3;
 	it->uuid = syscallUUID;
+	it->seq = 0;
 
 	short family = 0x02;
 	struct BindInfo bindinfo;
@@ -427,8 +437,8 @@ void TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int sockfd, const
 	newhdr->tcph.check = 0;
 	newhdr->tcph.check = htons(~NetworkUtil::tcp_sum(newhdr->iph.saddr, newhdr->iph.daddr, (uint8_t*)(&(newhdr->tcph)), 20));
 	newpacket->writeData(0, newhdr, sizeof(struct hdr));
+	it->seq++;
 	this->sendPacket("IPv4",newpacket);
-
 	free(newhdr);
 }
 
@@ -581,15 +591,16 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			newhdr->tcph.check = 0;
 			newhdr->tcph.check = htons(~NetworkUtil::tcp_sum(newhdr->iph.saddr, newhdr->iph.daddr, (uint8_t*)(&(newhdr->tcph)), 20));
 			newpacket->writeData(0, newhdr, sizeof(struct hdr));
-	
-			waiter->seq = ntohl(newhdr->tcph.seq);
+			waiter->seq = ntohl(newhdr->tcph.seq)+1;
 			this->sendPacket("IPv4",newpacket);
 			this->freePacket(packet);
 			free(newhdr);
 		}
-		else if(it->state == 3)
+		else if(it->state == 3||it->state == 2)
 		{
+			printf("YONOM!\n");
 			it->state = 2;
+			it->seq = 1;
 			Packet *newpacket = clonePacket(packet);
 			struct hdr* newhdr = (struct hdr*)malloc(sizeof(struct hdr));
 			newpacket->readData(0, newhdr, sizeof(struct hdr));
@@ -605,6 +616,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			uint32_t ack_seq = ntohl(hdr.tcph.seq);
 			ack_seq++;
 			newhdr->tcph.ack_seq = htonl(ack_seq);
+			newhdr->tcph.seq = htonl(it->seq);
 			newhdr->tcph.doff = sizeof(struct tcphdr) >> 2;
 			newhdr->tcph.fin = 0;
 			newhdr->tcph.syn = 0;
@@ -616,8 +628,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			newhdr->tcph.check = 0;
 			newhdr->tcph.check = htons(~NetworkUtil::tcp_sum(newhdr->iph.saddr, newhdr->iph.daddr, (uint8_t*)(&(newhdr->tcph)), 20));
 			newpacket->writeData(0, newhdr, sizeof(struct hdr));
-	
-			//waiter->seq = ntohl(newhdr->tcph.seq);
+			
+			
 			this->sendPacket("IPv4",newpacket);
 			this->freePacket(packet);
 			free(newhdr);
@@ -630,6 +642,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		uint16_t dport=ntohs(hdr.tcph.dest);
 		uint32_t saddr=ntohl(hdr.iph.saddr);
 		uint16_t sport=ntohs(hdr.tcph.source);
+		printf("ack packet from : %x:%d to %x:%d\n",saddr, sport, daddr, dport);
+
 		list<struct SocketInfo*>::iterator kt;
 		for(it=socket_table.begin();it!=socket_table.end();it++)
 		{
@@ -664,10 +678,11 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		}
 		if(it->state==5)
 		{
+			printf("555555555555555555555\n");
 			struct hdr* newhdr = (struct hdr*)malloc(sizeof(struct hdr));
 			packet->readData(0, newhdr, sizeof(struct hdr));
 
-			if((it->seq)+1 != ntohl(newhdr->tcph.ack_seq))
+			if((it->seq) != ntohl(newhdr->tcph.ack_seq))
 			{
 				printf("JASALHAJA\n");
 				return;
@@ -677,10 +692,40 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		}
 		else if(it->state ==9)
 		{
+			printf("999999999999999999\n");
 			struct hdr* newhdr = (struct hdr*)malloc(sizeof(struct hdr));
 			packet->readData(0, newhdr, sizeof(struct hdr));
 
-			if((it->seq)+1 != ntohl(newhdr->tcph.ack_seq))
+			if((it->seq) != ntohl(newhdr->tcph.ack_seq))
+			{
+				printf("Please JASAL\n");
+				return;
+			}
+			socket_table.erase(it);
+
+			int pid = it->pid;
+			int socket_fd = it->sockfd;
+
+			for(jt = bind_table.begin();jt!=bind_table.end();jt++)
+			{
+				if(jt->pid == pid && jt->sockfd == socket_fd)
+					break;
+			}
+		
+			if(jt != bind_table.end())
+			{
+				bind_table.erase(jt);
+			}
+			removeFileDescriptor (pid, socket_fd);
+			return returnSystemCall(it->uuid, 0);
+		}
+		else if(it->state ==10)
+		{
+			printf("101010101010101010101010\n");
+			struct hdr* newhdr = (struct hdr*)malloc(sizeof(struct hdr));
+			packet->readData(0, newhdr, sizeof(struct hdr));
+
+			if((it->seq) != ntohl(newhdr->tcph.ack_seq))
 			{
 				printf("Please JASAL\n");
 				return;
@@ -711,7 +756,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			packet->readData(0, newhdr, sizeof(struct hdr));
 			for(kt = it->wait_table.begin();kt!=it->wait_table.end();kt++)
 			{
-				if(((*kt)->seq)+1 == ntohl(newhdr->tcph.ack_seq))
+				if(((*kt)->seq) == ntohl(newhdr->tcph.ack_seq))
 					break;
 			}
 	
@@ -761,6 +806,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					sock.daddr=htonl(newhdr->iph.saddr);
 					sock.sport=htons(newhdr->tcph.dest);
 					sock.dport=htons(newhdr->tcph.source);
+					sock.seq = (*kt)->seq;
 					socket_table.push_back(sock);
 					struct BindInfo bindinfo;
 					bindinfo.pid = pid;
@@ -782,7 +828,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			{
 				return;
 			}
-			if(it->state == 2)
+			if(it->state == 2 ||  it->state == 3)
 			{
 				it->state = 4;
 				return returnSystemCall(it->uuid, 0);
@@ -829,7 +875,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		{
 			return;
 		}
-		if((it->seq)+1 != ntohl(hdr.tcph.ack_seq))
+		if((it->seq) != ntohl(hdr.tcph.ack_seq))
 			return;
 		
 		Packet *newpacket = clonePacket(packet);
@@ -877,87 +923,131 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		uint32_t daddr=ntohl(hdr.iph.daddr);
 		uint16_t sport=ntohs(hdr.tcph.source);
 		uint16_t dport=ntohs(hdr.tcph.dest);
-		/*for(jt=bind_table.begin(); jt!=bind_table.end();jt++)
-		{
-			if((jt->address == daddr || jt->address == INADDR_ANY) && jt->port == dport)
-			{
-				break;
-			}
-		}
-		if(jt==bind_table.end())
-		{
-			printf("LLLLLLLLLLLLLLLLLLLLLLLLL\n");
-			return;
-		}
-		int pid = jt->pid;
-		int sockfd = jt->sockfd;
-		for(it = socket_table.begin();it!=socket_table.end();it++)
-		{
-			if(it->pid == pid && it->sockfd == sockfd)
-				break;
-		}
-		if(it==socket_table.end())
-		{
-			printf("LILILILI EE\n");
-			return;
-		}
-		while(it->state == 1|| it->state == 5)
-		{
-			printf("pid : %d sockfd : %d\n", it->pid, it->sockfd);
-			jt++;
-			for(;jt!=bind_table.end();jt++)
-			{
-				if((jt->address == daddr || jt->address == INADDR_ANY) && jt->port == dport)
-					{
-						break;
-					}
-			}
-			if(jt==bind_table.end())
-			{
-				return;
-			}
-			pid = jt->pid;
-			sockfd = jt->sockfd;
-			printf("newpid : %d newsockfd: %d\n", pid, sockfd);
-			for(it=socket_table.begin();it!=socket_table.end();it++)
-			{
-				if(it->pid == pid && it->sockfd == sockfd)
-					break;
-			}
-			if(it==socket_table.end())
-			{
-				printf("JOJUTNE\n");
-				return;
-			}
-			printf("even if???? it->state : %d\n", it->state);
-		}
-		printf("it->state : %d\n",it->state);*/
+		printf("fin packet from : %x:%d to %x:%d\n",saddr, sport, daddr, dport);
 		for(it=socket_table.begin();it!=socket_table.end();it++)
 		{
 			if(it->saddr == daddr && it->sport == dport && it->daddr == saddr && it->dport == sport)
+			{
+				printf("YOGIYO\n");
 				break;
+			}
 		}
 		if(it==socket_table.end())
 		{
-			//printf("SIBALSIBALSIBAL\n");
-			return;
-		}
-		while(it->state ==5)
-		{
-			it++;
-			for(;it!=socket_table.end();it++)
+			/*for(jt=bind_table.begin();jt!=bind_table.end();jt++)
 			{
-				if(it->saddr == daddr && it->sport == dport && it->daddr == saddr && it->dport == sport)
+				if(jt->address == daddr && jt->port == dport)
+				{
 					break;
+				}
 			}
+			if(jt==bind_table.end())
+			{*/
+				list<struct SocketInfo*>::iterator kt;
+				for(kt=estab_table.begin();kt!=estab_table.end();kt++)
+				{
+					if((*kt)->saddr == saddr && (*kt)->daddr == daddr)
+					{
+						break;
+					}
+				}
+				if(kt==estab_table.end())
+				{
+					return;
+				}
+				else
+				{
+					(*kt)->state = 8;
+					Packet *newpacket = clonePacket(packet);
+					struct hdr* newhdr = (struct hdr*)malloc(sizeof(struct hdr));
+					newpacket->readData(0, newhdr, sizeof(struct hdr));
+					packet->readData(14+12, &(newhdr->iph.daddr), 4);
+					packet->readData(14+16, &(newhdr->iph.saddr), 4);
+					packet->readData(14+20, &(newhdr->tcph.dest), 2);
+					packet->readData(14+22, &(newhdr->tcph.source), 2);
+					newpacket->writeData(14+12, &(newhdr->iph.saddr), 4);
+					newpacket->writeData(14+16, &(newhdr->iph.daddr), 4);
+					newpacket->writeData(14+20, &(newhdr->tcph.source), 2);
+					newpacket->writeData(14+22, &(newhdr->tcph.dest), 2);
+					packet->readData(14+24, &(newhdr->tcph.seq), 4);
+					uint32_t ack_seq = ntohl(hdr.tcph.seq);
+					ack_seq++;
+
+					//newhdr->tcph.seq = htonl((*kt)->seq);
+
+					newhdr->tcph.ack_seq = htonl(ack_seq);
+					newhdr->tcph.doff = sizeof(struct tcphdr) >> 2;
+					newhdr->tcph.fin = 0;
+					newhdr->tcph.syn = 0;
+					newhdr->tcph.rst = 0;
+					newhdr->tcph.psh = 0;
+					newhdr->tcph.ack = 1;
+					newhdr->tcph.urg = 0;
+					newhdr->tcph.window = htons(51200);
+					newhdr->tcph.check = 0;
+					newhdr->tcph.check = htons(~NetworkUtil::tcp_sum(newhdr->iph.saddr, newhdr->iph.daddr, (uint8_t*)(&(newhdr->tcph)), 20));
+					newpacket->writeData(0, newhdr, sizeof(struct hdr));	
+					this->sendPacket("IPv4",newpacket);
+					this->freePacket(packet);
+					free(newhdr);
+				}
+			/*}
+			else
+			{
+
+				for(it=socket_table.begin();it!=socket_table.end();it++)
+				{
+					if(it->pid == jt->pid && it->sockfd== jt->sockfd)
+					{
+						break;
+					}
+				}
+			}*/
 			if(it==socket_table.end())
 			{
-				//printf("SIBAL!SIBAL!SIBAL!\n");
 				return;
 			}
+
 		}
-		if(it->state == 4)
+		if(it->state == 1)
 		{
+			Packet *newpacket = clonePacket(packet);
+			struct hdr* newhdr = (struct hdr*)malloc(sizeof(struct hdr));
+			newpacket->readData(0, newhdr, sizeof(struct hdr));
+			packet->readData(14+12, &(newhdr->iph.daddr), 4);
+			packet->readData(14+16, &(newhdr->iph.saddr), 4);
+			packet->readData(14+20, &(newhdr->tcph.dest), 2);
+			packet->readData(14+22, &(newhdr->tcph.source), 2);
+			newpacket->writeData(14+12, &(newhdr->iph.saddr), 4);
+			newpacket->writeData(14+16, &(newhdr->iph.daddr), 4);
+			newpacket->writeData(14+20, &(newhdr->tcph.source), 2);
+			newpacket->writeData(14+22, &(newhdr->tcph.dest), 2);
+			packet->readData(14+24, &(newhdr->tcph.seq), 4);
+			uint32_t ack_seq = ntohl(hdr.tcph.seq);
+			ack_seq++;
+			newhdr->tcph.ack_seq = htonl(ack_seq);
+			newhdr->tcph.seq = htonl(it->seq);
+			newhdr->tcph.doff = sizeof(struct tcphdr) >> 2;
+			newhdr->tcph.fin = 0;
+			newhdr->tcph.syn = 0;
+			newhdr->tcph.rst = 0;
+			newhdr->tcph.psh = 0;
+			newhdr->tcph.ack = 1;
+			newhdr->tcph.urg = 0;
+			newhdr->tcph.window = htons(51200);
+			newhdr->tcph.check = 0;
+			newhdr->tcph.check = htons(~NetworkUtil::tcp_sum(newhdr->iph.saddr, newhdr->iph.daddr, (uint8_t*)(&(newhdr->tcph)), 20));
+			newpacket->writeData(0, newhdr, sizeof(struct hdr));	
+			printf("!!!!!!!!!!!!!sending from %x:%d to %x:%d\n",newhdr->iph.saddr,newhdr->tcph.source,newhdr->iph.daddr,newhdr->tcph.dest);
+			printf("!!!!!!!!!!!!!with seq : %x\n", newhdr->tcph.seq);
+			this->sendPacket("IPv4",newpacket);
+			this->freePacket(packet);
+			free(newhdr);
+
+		}
+		else if (it->state == 4)
+		{
+			printf("ESTAB to CLOSEWAIT\n");
 			it->state = 8;
 			Packet *newpacket = clonePacket(packet);
 			struct hdr* newhdr = (struct hdr*)malloc(sizeof(struct hdr));
@@ -974,6 +1064,9 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			uint32_t ack_seq = ntohl(hdr.tcph.seq);
 			ack_seq++;
 			newhdr->tcph.ack_seq = htonl(ack_seq);
+
+			newhdr->tcph.seq = htonl(it->seq);
+
 			newhdr->tcph.doff = sizeof(struct tcphdr) >> 2;
 			newhdr->tcph.fin = 0;
 			newhdr->tcph.syn = 0;
@@ -991,6 +1084,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		}
 		else if(it->state == 6)
 		{
+			printf("FIN_WAIT_2 to TIMED_WAIT\n");
 			it->state = 7;
 			Packet *newpacket = clonePacket(packet);
 			struct hdr* newhdr = (struct hdr*)malloc(sizeof(struct hdr));
@@ -1006,6 +1100,9 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			packet->readData(14+24, &(newhdr->tcph.seq), 4);
 			uint32_t ack_seq = ntohl(hdr.tcph.seq);
 			ack_seq++;
+
+			newhdr->tcph.seq = htonl(it->seq);
+
 			newhdr->tcph.ack_seq = htonl(ack_seq);
 			newhdr->tcph.doff = sizeof(struct tcphdr) >> 2;
 			newhdr->tcph.fin = 0;
@@ -1038,6 +1135,44 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			}
 			removeFileDescriptor (pid, socket_fd);
 			return returnSystemCall(it->uuid, 0);
+		}
+		else if(it->state ==5)
+		{
+			printf("FIN_WAIT_1 To Closing\n");
+			it->state = 10;
+			Packet *newpacket = clonePacket(packet);
+			struct hdr* newhdr = (struct hdr*)malloc(sizeof(struct hdr));
+			newpacket->readData(0, newhdr, sizeof(struct hdr));
+			packet->readData(14+12, &(newhdr->iph.daddr), 4);
+			packet->readData(14+16, &(newhdr->iph.saddr), 4);
+			packet->readData(14+20, &(newhdr->tcph.dest), 2);
+			packet->readData(14+22, &(newhdr->tcph.source), 2);
+			newpacket->writeData(14+12, &(newhdr->iph.saddr), 4);
+			newpacket->writeData(14+16, &(newhdr->iph.daddr), 4);
+			newpacket->writeData(14+20, &(newhdr->tcph.source), 2);
+			newpacket->writeData(14+22, &(newhdr->tcph.dest), 2);
+			packet->readData(14+24, &(newhdr->tcph.seq), 4);
+			uint32_t ack_seq = ntohl(hdr.tcph.seq);
+			ack_seq++;
+			newhdr->tcph.ack_seq = htonl(ack_seq);
+
+			newhdr->tcph.seq = htonl(it->seq);
+
+			newhdr->tcph.doff = sizeof(struct tcphdr) >> 2;
+			newhdr->tcph.fin = 0;
+			newhdr->tcph.syn = 0;
+			newhdr->tcph.rst = 0;
+			newhdr->tcph.psh = 0;
+			newhdr->tcph.ack = 1;
+			newhdr->tcph.urg = 0;
+			newhdr->tcph.window = htons(51200);
+			newhdr->tcph.check = 0;
+			newhdr->tcph.check = htons(~NetworkUtil::tcp_sum(newhdr->iph.saddr, newhdr->iph.daddr, (uint8_t*)(&(newhdr->tcph)), 20));
+			newpacket->writeData(0, newhdr, sizeof(struct hdr));	
+			this->sendPacket("IPv4",newpacket);
+			this->freePacket(packet);
+			free(newhdr);
+		
 		}
 	
 	}
