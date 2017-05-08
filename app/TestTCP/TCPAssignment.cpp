@@ -417,6 +417,7 @@ void TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int sockfd, const
 	newpacket->writeData(0, newhdr, sizeof(struct hdr));
 	it->seq++;
 //	printf("connect request from %x:%d to %x:%d\n", saddr, sport, daddr, dport);
+//
 	this->sendPacket("IPv4",newpacket);
 	free(newhdr);
 }
